@@ -1,0 +1,42 @@
+# === OS & IDE Files ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.sublime-project
+*.sublime-workspace
+.idea/
+
+# === Web Dashboard (Node / Vite) ===
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment / Secrets (와이파이 비번, API 토큰 등)
+.env
+.env.production
+*.env.local
+
+# === Firmware / PlatformIO ===
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Arduino / PlatformIO output files
+*.elf
+*.bin
+*.hex
+
+# === Common Temporary & Log Files ===
+logs/
+*.log
+tmp/

@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>여섯 번째 손가락 제어 대시보드</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #38bdf8;
+      --primary-hover: #0284c7;
+      --accent: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 16px; min-height: 100vh; }
+    .container { max-width: 600px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    h1 { font-size: 1.25rem; font-weight: 700; color: var(--primary); }
+    .status-badge { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; padding: 4px 10px; border-radius: 9999px; background: #334155; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+    .status-dot.online { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+    .status-dot.sim { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+    
+    .card { background: var(--card-bg); border-radius: 12px; padding: 16px; border: 1px solid var(--border); }
+    .card h2 { font-size: 1rem; margin-bottom: 12px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    
+    .gauge-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .gauge-box { background: #0f172a; border-radius: 8px; padding: 12px; text-align: center; }
+    .gauge-val { font-size: 1.8rem; font-weight: 800; color: var(--primary); margin: 4px 0; }
+    .gauge-label { font-size: 0.75rem; color: var(--text-muted); }
+    .bar-bg { width: 100%; height: 8px; background: #334155; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+    .bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.08s ease; }
+    .bar-fill.servo { background: var(--accent); }
+
+    .control-group { margin-bottom: 14px; }
+    .control-header { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px; }
+    input[type=range] { width: 100%; accent-color: var(--primary); cursor: pointer; }
+    
+    .toggle-row { display: flex; background: #0f172a; border-radius: 8px; padding: 4px; gap: 4px; margin-bottom: 16px; }
+    .toggle-btn { flex: 1; padding: 10px; border: none; background: transparent; color: var(--text-muted); font-size: 0.85rem; font-weight: 600; border-radius: 6px; cursor: pointer; transition: 0.2s; }
+    .toggle-btn.active { background: var(--primary); color: #0f172a; }
+
+    .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .btn { padding: 10px 14px; border: none; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: 0.2s; background: #334155; color: var(--text); }
+    .btn:hover { opacity: 0.9; }
+    .btn-primary { background: var(--primary); color: #0f172a; }
+    .btn-accent { background: var(--accent); color: #0f172a; }
+    .btn-warn { background: var(--warn); color: #0f172a; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-full { grid-column: span 2; }
+
+    .sim-panel { background: rgba(56, 189, 248, 0.08); border: 1px dashed var(--primary); border-radius: 8px; padding: 12px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>여섯 번째 손가락 (3팀)</h1>
+      <div class="status-badge">
+        <div id="statusDot" class="status-dot"></div>
+        <span id="statusText">연결 대기중</span>
+      </div>
+    </header>
+
+    <!-- 1. 실시간 모니터링 섹션 -->
+    <div class="card">
+      <h2>실시간 센서 & 서보 모니터링</h2>
+      <div class="gauge-grid">
+        <div class="gauge-box">
+          <div class="gauge-label">발 족압 센서 (FSR)</div>
+          <div id="pressureVal" class="gauge-val">0</div>
+          <div class="gauge-label">ADC 12-bit (0 ~ 4095)</div>
+          <div class="bar-bg"><div id="pressureBar" class="bar-fill"></div></div>
+        </div>
+        <div class="gauge-box">
+          <div class="gauge-label">서보 모터 각도</div>
+          <div id="angleVal" class="gauge-val">0°</div>
+          <div class="gauge-label">가동 범위 (0° ~ 180°)</div>
+          <div class="bar-bg"><div id="angleBar" class="bar-fill servo"></div></div>
+        </div>
+      </div>
+
+      <!-- PC 브라우저용 가상 시뮬레이터 (하드웨어 미연결 시 테스트용) -->
+      <div id="simContainer" class="sim-panel">
+        <div class="control-header">
+          <span style="color:var(--primary); font-weight:bold;">🎮 PC 가상 발 압력 테스트 슬라이더</span>
+          <span id="simValDisp" style="color:var(--primary);">0</span>
+        </div>
+        <input type="range" id="simSlider" min="0" max="4095" step="10" value="0" oninput="handleSimPressure(this.value)">
+        <p style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+          * PC에서 직접 열었을 때 발 압력과 모터 연동 동작을 가상으로 시뮬레이션할 수 있습니다.
+        </p>
+      </div>
+    </div>
+
+    <!-- 2. 제어 모드 및 민감도 튜닝 섹션 -->
+    <div class="card">
+      <h2>제어 모드 & 민감도 설정</h2>
+      <div class="toggle-row">
+        <button id="btnMode0" class="toggle-btn active" onclick="setMode(0)">연속 비례 추종 (Continuous)</button>
+        <button id="btnMode1" class="toggle-btn" onclick="setMode(1)">파지 래치 (Hysteresis)</button>
+      </div>
+
+      <div class="control-group">
+        <div class="control-header">
+          <span>EMA 필터 계수 (α)</span>
+          <span id="alphaDisp" style="color:var(--primary); font-weight:bold;">0.25</span>
+        </div>
+        <input type="range" id="alphaSlider" min="0.05" max="0.95" step="0.05" value="0.25" onchange="updateAlpha(this.value)">
+      </div>
+
+      <div class="control-group" id="hysteresisControls">
+        <div class="control-header">
+          <span>파지 임계값 (Threshold HIGH)</span>
+          <span id="thHighDisp" style="color:var(--warn); font-weight:bold;">2200</span>
+        </div>
+        <input type="range" id="thHighSlider" min="1000" max="3800" step="50" value="2200" onchange="updateThresholds()">
+        
+        <div class="control-header" style="margin-top:10px;">
+          <span>해제 임계값 (Threshold LOW)</span>
+          <span id="thLowDisp" style="color:var(--accent); font-weight:bold;">800</span>
+        </div>
+        <input type="range" id="thLowSlider" min="200" max="2000" step="50" value="800" onchange="updateThresholds()">
+      </div>
+    </div>
+
+    <!-- 3. 사용자 맞춤 캘리브레이션 섹션 -->
+    <div class="card">
+      <h2>캘리브레이션 & LUT 메모리 관리</h2>
+      <div class="btn-grid">
+        <button class="btn btn-warn" onclick="sendCmd('reset_lut')">arccos 기본 LUT 복원</button>
+        <button class="btn btn-accent" id="btnCalib" onclick="toggleCalib()">플렉스 센서 보정 시작</button>
+        <button class="btn btn-primary btn-full" onclick="sendCmd('save_nvs')">설정 및 LUT 영구 저장 (Flash NVS)</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws;
+    let isCalibrating = false;
+    let isSimMode = false;
+    let currentMode = 0; // 0: Continuous, 1: Hysteresis
+    let thHigh = 2200;
+    let thLow = 800;
+    let isLatched = false;
+
+    // arccos 기반 비선형 LUT 시뮬레이터 (브라우저용)
+    function calcArccosAngle(pressure) {
+      let u = Math.min(Math.max(pressure / 4095, 0), 1);
+      let acosInput = 1.0 - (2.0 * u);
+      let rad = Math.acos(Math.max(Math.min(acosInput, 1), -1));
+      return Math.round((rad / Math.PI) * 180);
+    }
+
+    function updateUi(p, a, m) {
+      document.getElementById('pressureVal').innerText = p;
+      document.getElementById('pressureBar').style.width = `${(p / 4095) * 100}%`;
+      document.getElementById('angleVal').innerText = `${a}°`;
+      document.getElementById('angleBar').style.width = `${(a / 180) * 100}%`;
+
+      if (m === 0) {
+        document.getElementById('btnMode0').classList.add('active');
+        document.getElementById('btnMode1').classList.remove('active');
+      } else {
+        document.getElementById('btnMode1').classList.add('active');
+        document.getElementById('btnMode0').classList.remove('active');
+      }
+    }
+
+    function handleSimPressure(val) {
+      const p = parseInt(val);
+      document.getElementById('simValDisp').innerText = p;
+      let angle = 0;
+
+      if (currentMode === 0) {
+        angle = calcArccosAngle(p);
+      } else {
+        if (p >= thHigh) isLatched = true;
+        else if (p <= thLow) isLatched = false;
+        angle = isLatched ? 180 : 0;
+      }
+      updateUi(p, angle, currentMode);
+    }
+
+    function connect() {
+      // 로컬 파일로 열었을 경우 시뮬레이션 모드 활성화
+      if (window.location.protocol === 'file:' || window.location.hostname === '') {
+        isSimMode = true;
+        document.getElementById('statusDot').className = 'status-dot sim';
+        document.getElementById('statusText').innerText = 'PC 시뮬레이션 모드';
+        return;
+      }
+
+      ws = new WebSocket(`ws://${window.location.hostname}/ws`);
+      ws.onopen = () => {
+        document.getElementById('statusDot').className = 'status-dot online';
+        document.getElementById('statusText').innerText = 'ESP32 실시간 연결됨';
+      };
+      ws.onclose = () => {
+        document.getElementById('statusDot').className = 'status-dot';
+        document.getElementById('statusText').innerText = '연결 끊김 (재시도 중)';
+        setTimeout(connect, 1500);
+      };
+      ws.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          updateUi(data.p, data.a, data.m);
+        } catch (e) {}
+      };
+    }
+
+    function sendCmd(cmd, payload = {}) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ cmd, ...payload }));
+      } else {
+        console.log('[명령 전송 (시뮬레이션)]', cmd, payload);
+        alert(`[${cmd}] 명령이 실행되었습니다.`);
+      }
+    }
+
+    function setMode(mode) {
+      currentMode = mode;
+      sendCmd('set_mode', { val: mode });
+      if (isSimMode) {
+        handleSimPressure(document.getElementById('simSlider').value);
+      }
+    }
+
+    function updateAlpha(val) {
+      document.getElementById('alphaDisp').innerText = val;
+      sendCmd('set_alpha', { val: parseFloat(val) });
+    }
+
+    function updateThresholds() {
+      thHigh = parseInt(document.getElementById('thHighSlider').value);
+      thLow = parseInt(document.getElementById('thLowSlider').value);
+      document.getElementById('thHighDisp').innerText = thHigh;
+      document.getElementById('thLowDisp').innerText = thLow;
+      sendCmd('set_threshold', { high: thHigh, low: thLow });
+      if (isSimMode) {
+        handleSimPressure(document.getElementById('simSlider').value);
+      }
+    }
+
+    function toggleCalib() {
+      isCalibrating = !isCalibrating;
+      const btn = document.getElementById('btnCalib');
+      if (isCalibrating) {
+        btn.innerText = '플렉스 센서 보정 종료 및 반영';
+        btn.classList.add('btn-danger');
+        btn.classList.remove('btn-accent');
+        sendCmd('start_calib');
+      } else {
+        btn.innerText = '플렉스 센서 보정 시작';
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-accent');
+        sendCmd('finish_calib');
+      }
+    }
+
+    window.addEventListener('load', connect);
+  </script>
+</body>
+</html>
