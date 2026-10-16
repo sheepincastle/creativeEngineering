@@ -26,10 +26,15 @@
 #define SERVO_MIN_US 500
 #define SERVO_MAX_US 2500
 
-// 안전 타이머 상수
+// 안전 및 파지 제어 상수
 #define TIMEOUT_FAILSAFE_MS 300     // 300ms 패킷 단절 시 릴리즈
-#define STALL_PROTECT_MS 5000       // 5초 연속 최대 굽힘 시 감압
 #define TELEMETRY_INTERVAL_MS 100   // 웹소켓 실시간 데이터 전송 주기
+
+// 적응형 파지 유지 및 지수형 백오프(Exponential Back-off) 상수
+#define HOLD_DETECT_TIME_MS   1200  // 각도 유지 감지 시간 (1.2초)
+#define HOLD_RELEASE_DELTA    250   // 유지 모드 해제 압력 강하 임계치
+#define MAX_BACKOFF_DEG       8     // 유지 시 완화할 최대 백오프 각도 (도)
+#define POWER_EXPONENT        3.0f  // 지수(거듭제곱) 계수: gamma = 3 (세제곱)
 
 // 전역 객체
 Servo fingerServo;
@@ -52,8 +57,12 @@ volatile unsigned long lastPacketTime = 0;
 uint8_t targetAngle = 0;
 uint8_t currentAngle = 0;
 bool isGripping = false; // Hysteresis 모드 상태 변수
-unsigned long highTorqueStartTime = 0;
-bool isStallProtected = false;
+
+// 적응형 파지 및 지수형 백오프 상태 변수
+bool isHoldingState = false;
+unsigned long holdStartTime = 0;
+uint8_t holdAnchorAngle = 0;
+uint16_t holdAnchorPressure = 0;
 
 // NVS 설정 로드 및 저장
 void loadSettings() {
@@ -202,12 +211,16 @@ void loop() {
     // 1. Fail-Safe 검사: 패킷 타임아웃
     if (now - lastPacketTime > TIMEOUT_FAILSAFE_MS) {
         targetAngle = 0; // 통신 단절 시 자동 릴리즈
+        isHoldingState = false;
+        holdStartTime = 0;
     } 
     // 2. 모터 제어 파이프라인
     else {
+        uint8_t rawTargetAngle = 0;
+
         // [모드 A] 연속 비례 제어 (Continuous Mode)
         if (config.control_mode == MODE_CONTINUOUS) {
-            targetAngle = calibrator.mapPressureToAngle(currentPressure);
+            rawTargetAngle = calibrator.mapPressureToAngle(currentPressure);
         }
         // [모드 B] 듀얼 임계값 제어 (Hysteresis Mode)
         else {
@@ -216,20 +229,54 @@ void loop() {
             } else if (currentPressure <= config.threshold_low) {
                 isGripping = false;
             }
-            targetAngle = isGripping ? 180 : 0;
+            rawTargetAngle = isGripping ? 180 : 0;
         }
 
-        // 3. Fail-Safe 검사: 스톨 방지 타이머 (고토크 장시간 지속 시 모터 보호)
-        if (targetAngle >= 175) {
-            if (highTorqueStartTime == 0) {
-                highTorqueStartTime = now;
-            } else if (now - highTorqueStartTime > STALL_PROTECT_MS) {
-                isStallProtected = true;
-                targetAngle = 110; // 60% 수준으로 장력 완화
+        // 3. 적응형 파지 감지 및 지수형 백오프(Exponential Back-off) 토크 제어
+        if (rawTargetAngle >= 10) {
+            // (1) 사용자가 발을 떼거나 힘을 크게 빼면(놓으려는 의도) 유지 상태 즉시 해제
+            if (isHoldingState && currentPressure + HOLD_RELEASE_DELTA < holdAnchorPressure) {
+                isHoldingState = false;
+                holdStartTime = 0;
+            }
+
+            // (2) 특정 각도에서 일정 시간(1.2초) 머물면 파지 유지(Hold) 상태 진입
+            if (!isHoldingState) {
+                if (abs((int)rawTargetAngle - (int)holdAnchorAngle) <= 2) {
+                    if (holdStartTime == 0) {
+                        holdStartTime = now;
+                        holdAnchorAngle = rawTargetAngle;
+                        holdAnchorPressure = currentPressure;
+                    } else if (now - holdStartTime >= HOLD_DETECT_TIME_MS) {
+                        isHoldingState = true;
+                    }
+                } else {
+                    // 각도가 변동 중이면 타이머 갱신
+                    holdStartTime = 0;
+                    holdAnchorAngle = rawTargetAngle;
+                    holdAnchorPressure = currentPressure;
+                }
+            }
+
+            // (3) 지수함수 모델 적용: 압력에 따른 백오프 각도 계산
+            if (isHoldingState) {
+                float normPressure = (float)currentPressure / 4095.0f;
+                normPressure = constrain(normPressure, 0.0f, 1.0f);
+
+                // 지수(세제곱) 모델: 일상 파지 시 토크를 80~90% 완화, 극한 압력에서만 100% 토크 방출
+                float forceRatio = powf(normPressure, POWER_EXPONENT);
+                float backoffDeg = MAX_BACKOFF_DEG * (1.0f - forceRatio);
+
+                int adjustedAngle = (int)rawTargetAngle - (int)round(backoffDeg);
+                targetAngle = (uint8_t)constrain(adjustedAngle, 0, 180);
+            } else {
+                targetAngle = rawTargetAngle;
             }
         } else {
-            highTorqueStartTime = 0;
-            isStallProtected = false;
+            // 손가락이 펴진 이완 상태(각도 < 10)에서는 유지 모드 리셋
+            isHoldingState = false;
+            holdStartTime = 0;
+            targetAngle = rawTargetAngle;
         }
     }
 
