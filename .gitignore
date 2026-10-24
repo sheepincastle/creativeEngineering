@@ -7,6 +7,8 @@ Desktop.ini
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+**/.vscode/c_cpp_properties.json
+**/.vscode/launch.json
 *.sublime-project
 *.sublime-workspace
 .idea/
@@ -27,9 +29,9 @@ pnpm-debug.log*
 *.env.local
 
 # === Firmware / PlatformIO ===
-.pio/
-.pioenvs/
-.piolibdeps/
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
 
 # Arduino / PlatformIO output files
 *.elf

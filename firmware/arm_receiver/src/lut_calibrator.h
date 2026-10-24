@@ -16,9 +16,10 @@
 #define MAX_ADC_VAL 4095.0f
 #define FLEX_SENSOR_PIN 35      // 플렉스 센서 상시 연결 핀 (ADC1_CH7, 3kΩ 풀다운 저항)
 
-// 한계점 탐색 시 플렉스 센서 변화 멈춤 감지 기준 (기구적 끝점 도달 판정)
-#define FLEX_DELTA_THRESHOLD 6  // ADC 변화량이 이 값 이하로 유지되면 기구적 한계 도달로 판정
-#define LIMIT_HOLD_STEPS 15     // 약 0.3초 이상 변화가 없으면 해당 각도를 한계 지점으로 확정
+// 한계점 탐색 시 누적 변화량 기반 기구적 끝점 도달 판정 상수
+// (3kΩ 분배회로 기준 1°당 약 3.2 ADC 변화 -> 약 4~5° 이동 시 15 ADC 이상 변화하면 정상 이동 중으로 판정)
+#define FLEX_MOVE_MIN_DELTA 15  // 기준점 대비 이 값 이상 ADC가 변하면 손가락이 계속 움직이는 것으로 판정
+#define LIMIT_STALL_STEPS 12    // 서보가 12° 이상 회전하는 동안 누적 ADC 변화가 없으면 기구적 한계 도달로 확정
 
 class LutCalibrator {
 public:
@@ -43,14 +44,14 @@ public:
     }
 
     /**
-     * @brief 플렉스 센서 ADC 평균 읽기 (노이즈 억제용 8회 평균)
+     * @brief 플렉스 센서 ADC 평균 읽기 (노이즈 억제용 16회 평균)
      */
     uint16_t readFlexAdc() {
         uint32_t sum = 0;
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 16; i++) {
             sum += analogRead(FLEX_SENSOR_PIN);
         }
-        return (uint16_t)(sum / 8);
+        return (uint16_t)(sum / 16);
     }
 
     /**
@@ -58,7 +59,7 @@ public:
      */
     uint8_t readCurrentFingerAngle() {
         uint16_t adc = readFlexAdc();
-        if (flexAdcExtend == flexAdcFlex) return extendLimitAngle;
+        if (abs((int)flexAdcExtend - (int)flexAdcFlex) < 30) return extendLimitAngle;
 
         // 플렉스 센서의 현재 굽힘 비율 (0.0: 완전 신전 ~ 1.0: 최대 굴곡) 계산
         float ratio = (float)((int)adc - (int)flexAdcExtend) / (float)((int)flexAdcFlex - (int)flexAdcExtend);
@@ -94,7 +95,7 @@ public:
 
     /**
      * @brief 서보모터 왕복 스윕을 통한 양끝 한계 지점 탐색 및 (flexLimit - extendLimit + 1) 단계 선형 LUT 생성
-     * @details 1. 서보모터를 신전 방향과 굴곡 방향으로 움직여 플렉스 센서 변화가 멈추는 실제 기구적 한계점을 찾음
+     * @details 1. 서보모터를 신전 방향과 굴곡 방향으로 움직여 누적 플렉스 ADC 변화가 멈추는 실제 기구적 한계점을 찾음
      *          2. 신전 기준각 ~ 최대 굴곡각 사이의 모든 정수 각도 개수(lutSteps)만큼 LUT 단계를 설정하고,
      *             압력 패킷에 따라 플렉스 센서가 선형(0, 20, 40...)으로 변하도록 서보 각도를 역매핑함
      */
@@ -108,54 +109,70 @@ public:
         delay(500);
 
         // 1-A. 완전 신전(펴짐) 한계 각도 탐색 (90도 -> 0도 방향 스윕)
-        uint16_t prevAdc = readFlexAdc();
-        int holdCount = 0;
-        extendLimitAngle = 0;
+        uint16_t anchorAdc = readFlexAdc();
+        uint8_t lastMovingAngle = 90;
+        int stallSteps = 0;
+
         for (int angle = 90; angle >= 0; angle--) {
             servo.write(angle);
             delay(25);
             uint16_t curAdc = readFlexAdc();
-            if (abs((int)curAdc - (int)prevAdc) <= FLEX_DELTA_THRESHOLD) {
-                holdCount++;
-                if (holdCount >= LIMIT_HOLD_STEPS) {
-                    extendLimitAngle = (uint8_t)constrain(angle + LIMIT_HOLD_STEPS, 0, 90);
+
+            if (abs((int)curAdc - (int)anchorAdc) >= FLEX_MOVE_MIN_DELTA) {
+                // 손가락이 정상적으로 계속 펴지고 있음 -> 기준점 갱신
+                anchorAdc = curAdc;
+                lastMovingAngle = (uint8_t)angle;
+                stallSteps = 0;
+            } else {
+                stallSteps++;
+                if (stallSteps >= LIMIT_STALL_STEPS) {
+                    // LIMIT_STALL_STEPS(12도) 동안 플렉스 변화가 없으므로 직전 이동 각도를 신전 한계로 확정
                     break;
                 }
-            } else {
-                holdCount = 0;
-                prevAdc = curAdc;
             }
         }
+        extendLimitAngle = ( stallSteps >= LIMIT_STALL_STEPS ) ? lastMovingAngle : 0;
         servo.write(extendLimitAngle);
         delay(300);
         flexAdcExtend = readFlexAdc();
 
         // 1-B. 최대 굴곡(굽힘) 한계 각도 탐색 및 각도별 플렉스 응답 측정 (extendLimitAngle -> 180도 스윕)
-        prevAdc = flexAdcExtend;
-        holdCount = 0;
-        flexLimitAngle = 180;
+        anchorAdc = flexAdcExtend;
+        lastMovingAngle = extendLimitAngle;
+        stallSteps = 0;
+
         for (int angle = extendLimitAngle; angle <= 180; angle++) {
             servo.write(angle);
             delay(25);
             uint16_t curAdc = readFlexAdc();
             sweepAdc[angle] = curAdc;
 
-            if (angle > extendLimitAngle + 20 && abs((int)curAdc - (int)prevAdc) <= FLEX_DELTA_THRESHOLD) {
-                holdCount++;
-                if (holdCount >= LIMIT_HOLD_STEPS) {
-                    flexLimitAngle = (uint8_t)constrain(angle - LIMIT_HOLD_STEPS, extendLimitAngle + 10, 180);
+            if (abs((int)curAdc - (int)anchorAdc) >= FLEX_MOVE_MIN_DELTA) {
+                // 손가락이 정상적으로 계속 굽혀지고 있음 -> 기준점 갱신
+                anchorAdc = curAdc;
+                lastMovingAngle = (uint8_t)angle;
+                stallSteps = 0;
+            } else if (angle > extendLimitAngle + 20) {
+                stallSteps++;
+                if (stallSteps >= LIMIT_STALL_STEPS) {
                     break;
                 }
-            } else {
-                holdCount = 0;
-                prevAdc = curAdc;
             }
+        }
+        flexLimitAngle = ( stallSteps >= LIMIT_STALL_STEPS ) ? lastMovingAngle : 180;
+        if (flexLimitAngle <= extendLimitAngle + 15) {
+            // 센서가 미연결되었거나 변화가 감지되지 않은 경우 안전 기본 범위(0~180도) 복원
+            extendLimitAngle = 0;
+            flexLimitAngle = 180;
+            generateArccosLut();
+            servo.write(extendLimitAngle);
+            Serial.println("[CALIB] 플렉스 센서 변화가 감지되지 않아 기본 arccos LUT(0°~180°)를 유지합니다.");
+            return;
         }
         flexAdcFlex = sweepAdc[flexLimitAngle];
 
         // 2. 신전 기준각 ~ 최대 굴곡각 사이의 모든 정수 각도 수(lutSteps)로 LUT 크기 설정
         lutSteps = (uint16_t)(flexLimitAngle - extendLimitAngle + 1);
-        if (lutSteps < 2) lutSteps = 2;
 
         // 3. 플렉스 센서 값이 선형으로 변화하도록 대응하는 서보모터 각도를 lutSteps 단계 LUT에 역매핑
         for (uint16_t i = 0; i < lutSteps; i++) {
@@ -178,8 +195,8 @@ public:
         servo.write(extendLimitAngle);
         isCalibrated = true;
 
-        Serial.printf("[CALIB] 완료! 신전 기준각=%u°, 최대 굴곡각=%u° -> 총 %u단계 LUT 생성\n",
-                      extendLimitAngle, flexLimitAngle, lutSteps);
+        Serial.printf("[CALIB] 완료! 신전 기준각=%u°(ADC:%u), 최대 굴곡각=%u°(ADC:%u) -> 총 %u단계 LUT 생성\n",
+                      extendLimitAngle, flexAdcExtend, flexLimitAngle, flexAdcFlex, lutSteps);
     }
 
     /**
@@ -229,7 +246,7 @@ public:
                           lutSteps, extendLimitAngle, flexLimitAngle);
             return true;
         }
-        Serial.println("[NVS] 저장된 LUT가 없어 arccos 기본값을 유지합니다.");
+        Serial.println("[NVS] 저장된 LUT가 없어 부팅 시 초기 탐색 또는 arccos 기본값을 사용합니다.");
         return false;
     }
 };

@@ -3,9 +3,9 @@
  * @brief 팔 구동부 (Forearm Actuator & Server) - ESP32 DevKitC V4
  * @details 1. 플렉스 센서(3kΩ 분배) 기반 양끝 한계 탐색 및 실시간 현재 각도 피드백
  *          2. 가변 N단계 LUT(플렉스 선형화 또는 arccos 기본값) 기반 압력 목표 각도 산출
- *          3. '각도 변화 요구치(desiredAngle - currentAngle)'와 양방향 지수함수(alpha)를 이용한 단일 통합 서보 제어
+ *          3. '각도 변화 요구치(desiredAngle - currentAngle)'와 지수함수적 변화량(alpha)을 이용한 단일 통합 서보 제어
  *          4. 내장 버튼(GPIO 0) 클릭 시 보행 중 오작동 방지를 위한 일시정지/잠금(Pause & Lock) 토글 기능
- *          5. 통신 단절 시 신전 기준각 복귀 및 요구치 90° 이상 5초 지속 시 70° 안전 제한(Fail-Safe)
+ *          5. 통신 단절 시 신전 기준각 복귀 및 요구치 150° 초과 5초 지속 시 140° 안전 제한(Fail-Safe)
  */
 
 #include <Arduino.h>
@@ -40,12 +40,6 @@
 #define STALL_SAFE_HOLD_DEMAND 140  // 과부하 시 강제 조정할 안전 유지 요구치 (140도 -> +19도 유지)
 #define BTN_DEBOUNCE_MS 250         // 버튼 채터링 방지 디바운스 시간 (250ms)
 #define TELEMETRY_INTERVAL_MS 100   // 웹소켓 실시간 데이터 전송 주기
-
-// 적응형 파지 유지 및 지수형 백오프(Exponential Back-off) 상수
-#define HOLD_DETECT_TIME_MS   1200  // 각도 유지 감지 시간 (1.2초)
-#define HOLD_RELEASE_DELTA    250   // 유지 모드 해제 압력 강하 임계치
-#define MAX_BACKOFF_DEG       8     // 유지 시 완화할 최대 백오프 각도 (도)
-#define POWER_EXPONENT        3.0f  // 지수(거듭제곱) 계수: gamma = 3 (세제곱)
 
 // 전역 객체
 Servo fingerServo;
@@ -118,7 +112,7 @@ void checkPauseButton() {
 }
 
 /**
- * @brief 각도 변화 요구치(demand)에 따른 양방향 지수함수 이동량 alpha 계산
+ * @brief 각도 변화 요구치(demand)에 따른 지수함수적 변화량 alpha 계산
  */
 int16_t computeExponentialAlpha(int16_t demand) {
     if (demand == 0) return 0;
@@ -140,15 +134,16 @@ int16_t computeExponentialAlpha(int16_t demand) {
 }
 
 // NVS 설정 로드 및 저장
-void loadSettings() {
+bool loadSettings() {
     prefs.begin("sixth_finger", false);
     config.ema_alpha = prefs.getFloat("alpha", 0.25f);
     config.max_step_alpha = prefs.getFloat("max_step", 35.0f);
     config.exp_curve_k = prefs.getFloat("exp_k", 2.5f);
 
-    calibrator.loadFromNvs(prefs);
+    bool hasSavedLut = calibrator.loadFromNvs(prefs);
     config.extend_limit_angle = calibrator.extendLimitAngle;
     config.flex_limit_angle = calibrator.flexLimitAngle;
+    return hasSavedLut;
 }
 
 void saveSettings() {
@@ -209,6 +204,7 @@ void broadcastTelemetry() {
     StaticJsonDocument<256> doc;
     doc["p"] = currentPressure;
     doc["a"] = currentAngle;
+    doc["m"] = 0; // 웹 대시보드 호환용 필드
     doc["des"] = desiredAngle;
     doc["dem"] = angleDemand;
     doc["target"] = servoTargetAngle;
@@ -236,13 +232,18 @@ void setup() {
     pinMode(STATUS_LED_PIN, OUTPUT);
     digitalWrite(STATUS_LED_PIN, HIGH); // 부팅 시 정상 구동 상태(LED ON)
 
-    // NVS에서 LUT 및 양끝 한계 각도 로드
-    loadSettings();
-
     // 서보 모터 초기화 (PDI-6221MG)
     ESP32PWM::allocateTimer(0);
     fingerServo.setPeriodHertz(50);
     fingerServo.attach(SERVO_PIN, SERVO_MIN_US, SERVO_MAX_US);
+
+    // NVS에서 LUT 및 양끝 한계 각도 로드 (저장된 설정이 없으면 부팅 시 자동 한계 탐색 수행)
+    bool hasSavedLut = loadSettings();
+    if (!hasSavedLut) {
+        calibrator.runFullFlexCalibration(fingerServo);
+        config.extend_limit_angle = calibrator.extendLimitAngle;
+        config.flex_limit_angle = calibrator.flexLimitAngle;
+    }
 
     // 초기 위치를 완전 신전 기준각(extendLimitAngle)으로 정렬
     servoTargetAngle = calibrator.extendLimitAngle;
@@ -279,7 +280,12 @@ void loop() {
         lastControlTime = now;
 
         // 1. 플렉스 센서를 통해 실제 손가락의 현재 각도(currentAngle) 측정
-        currentAngle = calibrator.readCurrentFingerAngle();
+        // (만약 플렉스 센서 미보정 상태라면 직전 서보 목표 각도를 현재 각도로 활용)
+        if (calibrator.isCalibrated) {
+            currentAngle = calibrator.readCurrentFingerAngle();
+        } else {
+            currentAngle = servoTargetAngle;
+        }
 
         // [일시정지/잠금 모드 체크] 잠금 상태면 모터 제어를 건너뛰어 대기 상태 유지
         if (isPaused) {
@@ -312,7 +318,7 @@ void loop() {
             isStallProtected = false;
         }
 
-        // 5. 각도 변화 요구치에 따른 양방향 지수함수 이동량(alpha) 계산 및 서보 이동 목표 각도 갱신
+        // 5. 각도 변화 요구치에 따른 지수함수적 변화량(alpha) 계산 및 서보 이동 목표 각도 갱신
         int16_t alpha = computeExponentialAlpha(angleDemand);
         int16_t nextServoAngle = (int16_t)currentAngle + alpha;
 
