@@ -1,7 +1,8 @@
 /**
  * @file main.cpp
  * @brief 발 송신부 (Foot Transmitter Module) - ESP32 DevKitC V4
- * @details FSR MD30-60 압력 센서의 전압값을 읽어 EMA 필터링 후 20ms 주기로 ESP-NOW 브로드캐스트 전송
+ * @details FSR MD30-60 압력 센서의 전압값을 읽어 영점 보정 및 EMA 필터링 후
+ *          20ms(50Hz) 주기로 ESP-NOW 브로드캐스트 전송
  */
 
 #include <Arduino.h>
@@ -11,12 +12,12 @@
 #include "protocol.h"
 
 // 핀 정의
-#define FSR_ADC_PIN 34          // FSR 센서 전압 분배점 (ADC1_CH6, 입력 전용 핀)
+#define FSR_ADC_PIN 34          // FSR 센서 전압 분배점 (ADC1_CH6, 입력 전용 핀, 1kΩ 풀다운)
 #define STATUS_LED_PIN 2        // 내장 상태 표시 LED
 
 // 통신 및 샘플링 설정
 #define SEND_INTERVAL_MS 20     // 전송 주기 20ms (50Hz)
-#define ZERO_SAMPLE_COUNT 50    // 부팅 시 영점 샘플링 횟수
+#define ZERO_SAMPLE_COUNT 50    // 부팅 시 무부하 영점 샘플링 횟수 (0.5초)
 
 // 전역 변수
 FootSensorPacket txPacket;
@@ -25,7 +26,6 @@ float filteredPressure = 0.0f;
 float emaAlpha = 0.25f;         // 기본 EMA 알파 계수
 uint16_t zeroOffset = 0;        // 무부하 기준 영점 오프셋
 unsigned long lastSendTime = 0;
-uint8_t packetSeq = 0;
 
 // 초기 무부하 영점 보정 함수
 void calibrateZeroOffset() {
@@ -35,7 +35,7 @@ void calibrateZeroOffset() {
         delay(10);
     }
     zeroOffset = sum / ZERO_SAMPLE_COUNT;
-    filteredPressure = (float)zeroOffset;
+    filteredPressure = 0.0f;
     Serial.printf("[FSR] 무부하 영점 보정 완료: Offset = %u\n", zeroOffset);
 }
 
@@ -111,12 +111,10 @@ void loop() {
         // 3. 지수 이동 평균(EMA) 필터링: S_t = α * Y_t + (1 - α) * S_{t-1}
         filteredPressure = (emaAlpha * (float)zeroAdjusted) + ((1.0f - emaAlpha) * filteredPressure);
 
-        // 4. 전송 패킷 조립
-        txPacket.raw_pressure = (uint16_t)filteredPressure;
-        txPacket.sequence_id = packetSeq++;
-        txPacket.flags = 0x00;
+        // 4. 전송 패킷 조립 (시간/불필요 변수 없이 순수 필터링된 압력값만 전송)
+        txPacket.raw_pressure = (uint16_t)constrain((int)round(filteredPressure), 0, 4095);
 
-        // 5. ESP-NOW 전송
+        // 5. ESP-NOW 브로드캐스트 전송
         esp_now_send(broadcastAddress, (uint8_t *)&txPacket, sizeof(txPacket));
     }
 }
