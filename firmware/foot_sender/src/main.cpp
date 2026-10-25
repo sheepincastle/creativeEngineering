@@ -63,7 +63,7 @@ void setup() {
     // 부팅 시 무부하 기준 영점 자동 캘리브레이션
     Serial.println("무부하 상태를 측정합니다.");
     Serial.println("센서 위에 아무것도 올려놓지 마세요.");
-    Serial.println("캘리브레이션은 3초 후에 시작됩니다...");
+    Serial.println("영점 조정은 3초 후에 시작됩니다...");
     delay(3000);
     calibrateZeroOffset();
 
