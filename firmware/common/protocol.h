@@ -16,8 +16,8 @@ typedef struct {
     float    ema_alpha;           // 발 센서 EMA 필터 계수 (기본값: 0.25)
     float    max_step_alpha;      // 요구치 최대(180도)일 때 지수함수 최대 변화량 (기본값: 35.0도)
     float    exp_curve_k;         // 지수함수 곡률 상수 k (기본값: 2.5 -> 요구치 140도 시 +19도 보장)
-    uint8_t  extend_limit_angle;  // 1단계 플렉스 센서로 찾은 완전 신전(펴짐) 기준 각도 (기본값: 0도)
-    uint8_t  flex_limit_angle;    // 1단계 플렉스 센서로 찾은 최대 굴곡(굽힘) 한계 각도 (기본값: 180도)
+    uint8_t  extend_limit_angle;  // 1단계 플렉스 센서로 찾은 신전 한계각 (기본값: 0도)
+    uint8_t  flex_limit_angle;    // 1단계 플렉스 센서로 찾은 굴곡 한계각 (기본값: 180도)
 } DeviceConfig;
 
 #endif // SIXTH_FINGER_PROTOCOL_H

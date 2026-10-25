@@ -5,7 +5,7 @@
  *          2. 가변 N단계 LUT(플렉스 선형화 또는 arccos 기본값) 기반 압력 목표 각도 산출
  *          3. '각도 변화 요구치(desiredAngle - currentAngle)'와 지수함수적 변화량(alpha)을 이용한 단일 통합 서보 제어
  *          4. 내장 버튼(GPIO 0) 클릭 시 보행 중 오작동 방지를 위한 일시정지/잠금(Pause & Lock) 토글 기능
- *          5. 통신 단절 시 신전 기준각 복귀 및 요구치 150° 초과 5초 지속 시 140° 안전 제한(Fail-Safe)
+ *          5. 통신 단절 시 신전 한계각 복귀 및 요구치 150° 초과 5초 지속 시 140° 안전 제한(Fail-Safe)
  */
 
 #include <Arduino.h>
@@ -34,7 +34,7 @@
 
 // 제어 주기 및 안전 타이머 상수
 #define CONTROL_INTERVAL_MS 20      // 서보 제어 루프 주기 (20ms, 50Hz)
-#define TIMEOUT_FAILSAFE_MS 300     // 300ms 패킷 단절 시 신전 기준각으로 복귀
+#define TIMEOUT_FAILSAFE_MS 300     // 300ms 패킷 단절 시 신전 한계각으로 복귀
 #define STALL_PROTECT_MS 5000       // 각도 변화 요구치 과부하 지속 허용 시간 (5초)
 #define STALL_CUTOFF_DEMAND 150     // 과부하 감지 커트라인 각도 변화 요구치 (150도 초과)
 #define STALL_SAFE_HOLD_DEMAND 140  // 과부하 시 강제 조정할 안전 유지 요구치 (140도 -> +19도 유지)
@@ -62,7 +62,7 @@ volatile uint16_t currentPressure = 0;
 volatile unsigned long lastPacketTime = 0;
 
 uint8_t desiredAngle = 0;       // 1. 압력 센서에 따른 목표 각도 (LUT 변환값)
-uint8_t currentAngle = 0;       // 2. 플렉스 센서에 따른 실제 현재 손가락 각도
+uint8_t currentAngle = 0;       // 2. 플렉스 센서에 따른 현재 실제 서보모터 각도
 uint8_t servoTargetAngle = 0;   // 3. 서보모터의 이번 주기 이동 목표 각도 (currentAngle + alpha)
 int16_t angleDemand = 0;        // 4. 각도 변화 요구치 (desiredAngle - currentAngle)
 
@@ -81,7 +81,7 @@ unsigned long lastControlTime = 0;
 void togglePauseState() {
     isPaused = !isPaused;
     if (isPaused) {
-        // 잠금 진입: 신전 기준각으로 편 뒤 서보 PWM 신호를 분리(detach)하여 모터 힘/전류 해제
+        // 잠금 진입: 신전 한계각으로 편 뒤 서보 PWM 신호를 분리(detach)하여 모터 힘/전류 해제
         fingerServo.write(calibrator.extendLimitAngle);
         delay(150);
         fingerServo.detach();
@@ -245,7 +245,7 @@ void setup() {
         config.flex_limit_angle = calibrator.flexLimitAngle;
     }
 
-    // 초기 위치를 완전 신전 기준각(extendLimitAngle)으로 정렬
+    // 초기 위치를 신전 한계각(extendLimitAngle)으로 정렬
     servoTargetAngle = calibrator.extendLimitAngle;
     fingerServo.write(servoTargetAngle);
 
@@ -279,10 +279,10 @@ void loop() {
     if (now - lastControlTime >= CONTROL_INTERVAL_MS) {
         lastControlTime = now;
 
-        // 1. 플렉스 센서를 통해 실제 손가락의 현재 각도(currentAngle) 측정
+        // 1. 플렉스 센서를 통해 현재 실제 서보모터 각도(currentAngle) 측정
         // (만약 플렉스 센서 미보정 상태라면 직전 서보 목표 각도를 현재 각도로 활용)
         if (calibrator.isCalibrated) {
-            currentAngle = calibrator.readCurrentFingerAngle();
+            currentAngle = calibrator.readCurrentServoAngle();
         } else {
             currentAngle = servoTargetAngle;
         }

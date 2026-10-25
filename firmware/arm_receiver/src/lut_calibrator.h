@@ -28,10 +28,10 @@ public:
     bool     isCalibrated;           // 플렉스 센서 실측 캘리브레이션 완료 여부
 
     // 플렉스 센서 양끝단 ADC 값 및 서보 한계 각도
-    uint16_t flexAdcExtend;     // 완전 신전(펴짐) 시 플렉스 센서 ADC 값
-    uint16_t flexAdcFlex;       // 최대 굴곡(굽힘) 시 플렉스 센서 ADC 값
-    uint8_t  extendLimitAngle;  // 1단계에서 찾은 실제 완전 신전 서보 기준각 (기본 0도)
-    uint8_t  flexLimitAngle;    // 1단계에서 찾은 실제 최대 굴곡 서보 한계각 (기본 180도)
+    uint16_t flexAdcExtend;     // 신전 한계각에서의 플렉스 센서 ADC 값
+    uint16_t flexAdcFlex;       // 굴곡 한계각에서의 플렉스 센서 ADC 값
+    uint8_t  extendLimitAngle;  // 1단계에서 찾은 실제 신전 한계각 (기본 0도)
+    uint8_t  flexLimitAngle;    // 1단계에서 찾은 실제 굴곡 한계각 (기본 180도)
 
     LutCalibrator()
         : lutSteps(181),
@@ -55,16 +55,26 @@ public:
     }
 
     /**
-     * @brief 플렉스 센서 값을 통해 현재 실제 손가락의 각도(extendLimitAngle ~ flexLimitAngle)를 산출
+     * @brief 플렉스 센서 값을 통해 현재 실제 서보모터 각도(extendLimitAngle ~ flexLimitAngle)를 산출
      */
-    uint8_t readCurrentFingerAngle() {
+    uint8_t readCurrentServoAngle() {
         uint16_t adc = readFlexAdc();
         if (abs((int)flexAdcExtend - (int)flexAdcFlex) < 30) return extendLimitAngle;
 
-        // 플렉스 센서의 현재 굽힘 비율 (0.0: 완전 신전 ~ 1.0: 최대 굴곡) 계산
+        // 플렉스 센서의 현재 굽힘 비율 (0.0: 신전 한계각 ~ 1.0: 굴곡 한계각) 계산
         float ratio = (float)((int)adc - (int)flexAdcExtend) / (float)((int)flexAdcFlex - (int)flexAdcExtend);
         if (ratio < 0.0f) ratio = 0.0f;
         if (ratio > 1.0f) ratio = 1.0f;
+
+        // 보정 완료 시: 플렉스 비율(ratio)에 대응하는 실제 서보모터 각도를 LUT에서 보간하여 반환
+        if (isCalibrated && lutSteps >= 2) {
+            float idxFloat = ratio * (float)(lutSteps - 1);
+            int idx = (int)idxFloat;
+            float frac = idxFloat - idx;
+            if (idx >= (int)lutSteps - 1) return angleLut[lutSteps - 1];
+            float deg = (1.0f - frac) * angleLut[idx] + frac * angleLut[idx + 1];
+            return (uint8_t)constrain((int)round(deg), extendLimitAngle, flexLimitAngle);
+        }
 
         float currentDeg = extendLimitAngle + ratio * (float)(flexLimitAngle - extendLimitAngle);
         return (uint8_t)constrain((int)round(currentDeg), extendLimitAngle, flexLimitAngle);
@@ -96,7 +106,7 @@ public:
     /**
      * @brief 서보모터 왕복 스윕을 통한 양끝 한계 지점 탐색 및 (flexLimit - extendLimit + 1) 단계 선형 LUT 생성
      * @details 1. 서보모터를 신전 방향과 굴곡 방향으로 움직여 누적 플렉스 ADC 변화가 멈추는 실제 기구적 한계점을 찾음
-     *          2. 신전 기준각 ~ 최대 굴곡각 사이의 모든 정수 각도 개수(lutSteps)만큼 LUT 단계를 설정하고,
+     *          2. 신전 한계각 ~ 굴곡 한계각 사이의 모든 정수 각도 개수(lutSteps)만큼 LUT 단계를 설정하고,
      *             압력 패킷에 따라 플렉스 센서가 선형(0, 20, 40...)으로 변하도록 서보 각도를 역매핑함
      */
     void runFullFlexCalibration(Servo &servo) {
@@ -108,7 +118,7 @@ public:
         servo.write(90);
         delay(500);
 
-        // 1-A. 완전 신전(펴짐) 한계 각도 탐색 (90도 -> 0도 방향 스윕)
+        // 1-A. 신전 한계각 탐색 (90도 -> 0도 방향 스윕)
         uint16_t anchorAdc = readFlexAdc();
         uint8_t lastMovingAngle = 90;
         int stallSteps = 0;
@@ -126,17 +136,17 @@ public:
             } else {
                 stallSteps++;
                 if (stallSteps >= LIMIT_STALL_STEPS) {
-                    // LIMIT_STALL_STEPS(12도) 동안 플렉스 변화가 없으므로 직전 이동 각도를 신전 한계로 확정
+                    // LIMIT_STALL_STEPS(12도) 동안 플렉스 변화가 없으므로 직전 이동 각도를 신전 한계각으로 확정
                     break;
                 }
             }
         }
-        extendLimitAngle = ( stallSteps >= LIMIT_STALL_STEPS ) ? lastMovingAngle : 0;
+        extendLimitAngle = lastMovingAngle;
         servo.write(extendLimitAngle);
         delay(300);
         flexAdcExtend = readFlexAdc();
 
-        // 1-B. 최대 굴곡(굽힘) 한계 각도 탐색 및 각도별 플렉스 응답 측정 (extendLimitAngle -> 180도 스윕)
+        // 1-B. 굴곡 한계각 탐색 및 각도별 플렉스 응답 측정 (extendLimitAngle -> 180도 스윕)
         anchorAdc = flexAdcExtend;
         lastMovingAngle = extendLimitAngle;
         stallSteps = 0;
@@ -159,7 +169,7 @@ public:
                 }
             }
         }
-        flexLimitAngle = ( stallSteps >= LIMIT_STALL_STEPS ) ? lastMovingAngle : 180;
+        flexLimitAngle = lastMovingAngle;
         if (flexLimitAngle <= extendLimitAngle + 15) {
             // 센서가 미연결되었거나 변화가 감지되지 않은 경우 안전 기본 범위(0~180도) 복원
             extendLimitAngle = 0;
@@ -171,7 +181,7 @@ public:
         }
         flexAdcFlex = sweepAdc[flexLimitAngle];
 
-        // 2. 신전 기준각 ~ 최대 굴곡각 사이의 모든 정수 각도 수(lutSteps)로 LUT 크기 설정
+        // 2. 신전 한계각 ~ 굴곡 한계각 사이의 모든 정수 각도 수(lutSteps)로 LUT 크기 설정
         lutSteps = (uint16_t)(flexLimitAngle - extendLimitAngle + 1);
 
         // 3. 플렉스 센서 값이 선형으로 변화하도록 대응하는 서보모터 각도를 lutSteps 단계 LUT에 역매핑
@@ -191,11 +201,11 @@ public:
             angleLut[i] = bestServoAngle;
         }
 
-        // 캘리브레이션 종료 후 완전 신전 기준 위치로 복귀
+        // 캘리브레이션 종료 후 신전 한계각 위치로 복귀
         servo.write(extendLimitAngle);
         isCalibrated = true;
 
-        Serial.printf("[CALIB] 완료! 신전 기준각=%u°(ADC:%u), 최대 굴곡각=%u°(ADC:%u) -> 총 %u단계 LUT 생성\n",
+        Serial.printf("[CALIB] 완료! 신전 한계각=%u°(ADC:%u), 굴곡 한계각=%u°(ADC:%u) -> 총 %u단계 LUT 생성\n",
                       extendLimitAngle, flexAdcExtend, flexLimitAngle, flexAdcFlex, lutSteps);
     }
 
