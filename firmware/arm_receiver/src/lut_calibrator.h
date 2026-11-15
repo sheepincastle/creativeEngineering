@@ -1,7 +1,7 @@
 /**
  * @file lut_calibrator.h
  * @brief 가변 단계(flexLimit - extendLimit + 1) 비선형 보정 룩업 테이블(LUT) 관리 및
- *        플렉스 센서(3kΩ 분배회로) 기반 양끝 한계 탐색 / 선형 역매핑 보정 엔진
+ *        플렉스 센서(3kΩ 분배회로) 기반 양끝 한계 탐색 / 선형 역매핑 보정 엔진 (다중 모터/센서 채널 지원)
  */
 
 #ifndef LUT_CALIBRATOR_H
@@ -11,10 +11,11 @@
 #include <Preferences.h>
 #include <ESP32Servo.h>
 #include <math.h>
+#include <stdio.h>
 
 #define MAX_LUT_SIZE 181        // 서보모터 최대 가동 범위(0°~180°)를 수용하는 배열 최대 크기
 #define MAX_ADC_VAL 4095.0f
-#define FLEX_SENSOR_PIN 35      // 플렉스 센서 상시 연결 핀 (ADC1_CH7, 3kΩ 풀다운 저항)
+#define DEFAULT_FLEX_PIN 35     // 기본 플렉스 센서 핀 (1번 플렉스 센서: GPIO 35)
 
 // 한계점 탐색 시 누적 변화량 기반 기구적 끝점 도달 판정 상수
 // (3kΩ 분배회로 기준 1°당 약 3.2 ADC 변화 -> 약 4~5° 이동 시 15 ADC 이상 변화하면 정상 이동 중으로 판정)
@@ -23,6 +24,10 @@
 
 class LutCalibrator {
 public:
+    uint8_t  flexSensorPin;          // 할당된 플렉스 센서 ADC1 핀 번호 (예: 35, 34)
+    uint8_t  motorId;                // 모터 식별 번호 (1: 1·2번 마디용, 2: 3번 마디용)
+    char     nvsPrefix[6];           // NVS 키 충돌 방지용 접두사 (예: "m1_", "m2_")
+
     uint8_t  angleLut[MAX_LUT_SIZE]; // 각 단계에 대응하는 서보 목표 각도 (extendLimit ~ flexLimit)
     uint16_t lutSteps;               // 실제 활성화된 LUT 단계 수 = (flexLimitAngle - extendLimitAngle + 1)
     bool     isCalibrated;           // 플렉스 센서 실측 캘리브레이션 완료 여부
@@ -33,14 +38,26 @@ public:
     uint8_t  extendLimitAngle;  // 1단계에서 찾은 실제 신전 한계각 (기본 0도)
     uint8_t  flexLimitAngle;    // 1단계에서 찾은 실제 굴곡 한계각 (기본 180도)
 
-    LutCalibrator()
-        : lutSteps(181),
+    LutCalibrator(uint8_t pin = DEFAULT_FLEX_PIN, const char *prefix = "m1_", uint8_t id = 1)
+        : flexSensorPin(pin),
+          motorId(id),
+          lutSteps(181),
           isCalibrated(false),
           flexAdcExtend(950),   // 3kΩ 풀다운 기준 평상시 약 945 ADC
           flexAdcFlex(370),     // 3kΩ 풀다운 기준 최대 굽힘 시 약 372 ADC
           extendLimitAngle(0),
           flexLimitAngle(180) {
+        snprintf(nvsPrefix, sizeof(nvsPrefix), "%s", prefix);
         generateArccosLut();
+    }
+
+    /**
+     * @brief 채널별 플렉스 센서 핀 번호 및 NVS 키 접두사 설정
+     */
+    void configure(uint8_t pin, const char *prefix, uint8_t id) {
+        flexSensorPin = pin;
+        motorId = id;
+        snprintf(nvsPrefix, sizeof(nvsPrefix), "%s", prefix);
     }
 
     /**
@@ -49,7 +66,7 @@ public:
     uint16_t readFlexAdc() {
         uint32_t sum = 0;
         for (int i = 0; i < 16; i++) {
-            sum += analogRead(FLEX_SENSOR_PIN);
+            sum += analogRead(flexSensorPin);
         }
         return (uint16_t)(sum / 16);
     }
@@ -99,8 +116,8 @@ public:
             angleLut[i] = (uint8_t)constrain((int)round(deg), extendLimitAngle, flexLimitAngle);
         }
         isCalibrated = false;
-        Serial.printf("[LUT] %u단계(%u°~%u°) 역코사인(arccos) 기본 LUT 생성 완료\n",
-                      lutSteps, extendLimitAngle, flexLimitAngle);
+        Serial.printf("[LUT #%u] %u단계(%u°~%u°) 역코사인(arccos) 기본 LUT 생성 완료\n",
+                      motorId, lutSteps, extendLimitAngle, flexLimitAngle);
     }
 
     /**
@@ -110,7 +127,8 @@ public:
      *             압력 패킷에 따라 플렉스 센서가 선형(0, 20, 40...)으로 변하도록 서보 각도를 역매핑함
      */
     void runFullFlexCalibration(Servo &servo) {
-        Serial.println("[CALIB] 플렉스 센서 기반 양끝 한계 탐색 및 가변 단계 선형화 캘리브레이션 시작...");
+        Serial.printf("[CALIB #%u (GPIO %u)] 플렉스 센서 기반 양끝 한계 탐색 및 선형화 캘리브레이션 시작...\n",
+                      motorId, flexSensorPin);
 
         uint16_t sweepAdc[MAX_LUT_SIZE] = {0};
 
@@ -176,7 +194,7 @@ public:
             flexLimitAngle = 180;
             generateArccosLut();
             servo.write(extendLimitAngle);
-            Serial.println("[CALIB] 플렉스 센서 변화가 감지되지 않아 기본 arccos LUT(0°~180°)를 유지합니다.");
+            Serial.printf("[CALIB #%u] 플렉스 센서 변화가 감지되지 않아 기본 arccos LUT(0°~180°)를 유지합니다.\n", motorId);
             return;
         }
         flexAdcFlex = sweepAdc[flexLimitAngle];
@@ -205,8 +223,8 @@ public:
         servo.write(extendLimitAngle);
         isCalibrated = true;
 
-        Serial.printf("[CALIB] 완료! 신전 한계각=%u°(ADC:%u), 굴곡 한계각=%u°(ADC:%u) -> 총 %u단계 LUT 생성\n",
-                      extendLimitAngle, flexAdcExtend, flexLimitAngle, flexAdcFlex, lutSteps);
+        Serial.printf("[CALIB #%u] 완료! 신전 한계각=%u°(ADC:%u), 굴곡 한계각=%u°(ADC:%u) -> 총 %u단계 LUT 생성\n",
+                      motorId, extendLimitAngle, flexAdcExtend, flexLimitAngle, flexAdcFlex, lutSteps);
     }
 
     /**
@@ -227,36 +245,68 @@ public:
     }
 
     /**
-     * @brief NVS(비휘발성 메모리)에 가변 단계 LUT 및 한계 지점 저장
+     * @brief NVS(비휘발성 메모리)에 채널별 가변 단계 LUT 및 한계 지점 저장
      */
     void saveToNvs(Preferences &prefs) {
-        prefs.putBytes("lut_table", angleLut, sizeof(angleLut));
-        prefs.putUShort("lut_steps", lutSteps);
-        prefs.putUChar("ext_lim", extendLimitAngle);
-        prefs.putUChar("flx_lim", flexLimitAngle);
-        prefs.putUShort("adc_ext", flexAdcExtend);
-        prefs.putUShort("adc_flx", flexAdcFlex);
-        prefs.putBool("is_calib", isCalibrated);
-        Serial.println("[NVS] 가변 단계 LUT 및 한계 각도 플래시 메모리 저장 완료");
+        char key[16];
+        snprintf(key, sizeof(key), "%slut_tbl", nvsPrefix);
+        prefs.putBytes(key, angleLut, sizeof(angleLut));
+
+        snprintf(key, sizeof(key), "%slut_stp", nvsPrefix);
+        prefs.putUShort(key, lutSteps);
+
+        snprintf(key, sizeof(key), "%sext_lim", nvsPrefix);
+        prefs.putUChar(key, extendLimitAngle);
+
+        snprintf(key, sizeof(key), "%sflx_lim", nvsPrefix);
+        prefs.putUChar(key, flexLimitAngle);
+
+        snprintf(key, sizeof(key), "%sadc_ext", nvsPrefix);
+        prefs.putUShort(key, flexAdcExtend);
+
+        snprintf(key, sizeof(key), "%sadc_flx", nvsPrefix);
+        prefs.putUShort(key, flexAdcFlex);
+
+        snprintf(key, sizeof(key), "%sis_cal", nvsPrefix);
+        prefs.putBool(key, isCalibrated);
+
+        Serial.printf("[NVS #%u] 가변 단계 LUT 및 한계 각도 플래시 메모리 저장 완료\n", motorId);
     }
 
     /**
-     * @brief NVS에서 저장된 가변 단계 LUT 및 한계 지점 로드
+     * @brief NVS에서 저장된 채널별 가변 단계 LUT 및 한계 지점 로드
      */
     bool loadFromNvs(Preferences &prefs) {
-        if (prefs.isKey("lut_table") && prefs.getBytesLength("lut_table") == sizeof(angleLut)) {
-            prefs.getBytes("lut_table", angleLut, sizeof(angleLut));
-            extendLimitAngle = prefs.getUChar("ext_lim", 0);
-            flexLimitAngle = prefs.getUChar("flx_lim", 180);
-            lutSteps = prefs.getUShort("lut_steps", (uint16_t)(flexLimitAngle - extendLimitAngle + 1));
-            flexAdcExtend = prefs.getUShort("adc_ext", 950);
-            flexAdcFlex = prefs.getUShort("adc_flx", 370);
-            isCalibrated = prefs.getBool("is_calib", false);
-            Serial.printf("[NVS] 저장된 %u단계(%u°~%u°) LUT 로드 성공\n",
-                          lutSteps, extendLimitAngle, flexLimitAngle);
+        char keyTbl[16];
+        snprintf(keyTbl, sizeof(keyTbl), "%slut_tbl", nvsPrefix);
+
+        if (prefs.isKey(keyTbl) && prefs.getBytesLength(keyTbl) == sizeof(angleLut)) {
+            prefs.getBytes(keyTbl, angleLut, sizeof(angleLut));
+
+            char key[16];
+            snprintf(key, sizeof(key), "%sext_lim", nvsPrefix);
+            extendLimitAngle = prefs.getUChar(key, 0);
+
+            snprintf(key, sizeof(key), "%sflx_lim", nvsPrefix);
+            flexLimitAngle = prefs.getUChar(key, 180);
+
+            snprintf(key, sizeof(key), "%slut_stp", nvsPrefix);
+            lutSteps = prefs.getUShort(key, (uint16_t)(flexLimitAngle - extendLimitAngle + 1));
+
+            snprintf(key, sizeof(key), "%sadc_ext", nvsPrefix);
+            flexAdcExtend = prefs.getUShort(key, 950);
+
+            snprintf(key, sizeof(key), "%sadc_flx", nvsPrefix);
+            flexAdcFlex = prefs.getUShort(key, 370);
+
+            snprintf(key, sizeof(key), "%sis_cal", nvsPrefix);
+            isCalibrated = prefs.getBool(key, false);
+
+            Serial.printf("[NVS #%u] 저장된 %u단계(%u°~%u°) LUT 로드 성공\n",
+                          motorId, lutSteps, extendLimitAngle, flexLimitAngle);
             return true;
         }
-        Serial.println("[NVS] 저장된 LUT가 없어 부팅 시 초기 탐색 또는 arccos 기본값을 사용합니다.");
+        Serial.printf("[NVS #%u] 저장된 LUT가 없어 부팅 시 초기 탐색 또는 arccos 기본값을 사용합니다.\n", motorId);
         return false;
     }
 };
