@@ -482,10 +482,13 @@
         </div>
 
         <!-- 2번 모터 카드 (손날 쪽 3번 마디) -->
-        <div class="card">
+        <div class="card" id="m2Card">
           <div class="card-header">
             <h2>2번 모터 (손날 쪽 3번 마디)</h2>
             <span id="m2CalBadge" class="sub-tag">arccos 기본 LUT</span>
+          </div>
+          <div id="m2SingleNotice" style="display:none; margin-bottom:10px; padding:8px 10px; border-radius:8px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.35); color:var(--warn); font-size:0.76rem; font-weight:600;">
+            ℹ️ 단일 모터 롤백 모드(NUM_MOTORS = 1)로 동작 중이므로 2번 모터 채널은 비활성화되어 있습니다.
           </div>
 
           <div class="metric-grid">
@@ -531,10 +534,10 @@
         </div>
       </div>
 
-      <!-- PC 가상 압력 테스트 시뮬레이터 패널 -->
+      <!-- 가상 발 압력 & 외란 테스트 시뮬레이터 패널 -->
       <div class="sim-panel">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <span style="font-size:0.85rem; font-weight:700; color:var(--primary);">🎮 가상 발 압력 & 외란 테스트 시뮬레이터 (오프라인/PC 검증용)</span>
+          <span style="font-size:0.85rem; font-weight:700; color:var(--primary);">🎮 가상 발 압력 & 외란 테스트 시뮬레이터 (ESP32 연결 시 실제 서보 구동 / 오프라인 시 PC 검증용)</span>
           <label style="font-size:0.78rem; color:var(--text-muted); cursor:pointer;">
             <input type="checkbox" id="simEnableChk" onchange="toggleSimMode(this.checked)"> 시뮬레이션 수동 조작 활성화
           </label>
@@ -543,16 +546,16 @@
           <div>
             <div class="bar-label-row">
               <span>1번 FSR 압력 (1·2번 마디): <strong id="simP1Disp">0</strong></span>
-              <span>물체 접촉(현재각 고정): <input type="checkbox" id="simBlock1"></span>
+              <span>물체 접촉(현재각 고정): <input type="checkbox" id="simBlock1" onchange="onSimInput()"></span>
             </div>
-            <input type="range" id="simP1Slider" min="0" max="4095" step="15" value="0" oninput="runSimStep()">
+            <input type="range" id="simP1Slider" min="0" max="4095" step="15" value="0" oninput="onSimInput()">
           </div>
           <div>
             <div class="bar-label-row">
               <span>2번 FSR 압력 (3번 마디): <strong id="simP2Disp">0</strong></span>
-              <span>물체 접촉(현재각 고정): <input type="checkbox" id="simBlock2"></span>
+              <span>물체 접촉(현재각 고정): <input type="checkbox" id="simBlock2" onchange="onSimInput()"></span>
             </div>
-            <input type="range" id="simP2Slider" min="0" max="4095" step="15" value="0" oninput="runSimStep()">
+            <input type="range" id="simP2Slider" min="0" max="4095" step="15" value="0" oninput="onSimInput()">
           </div>
         </div>
       </div>
@@ -616,12 +619,15 @@
           </div>
 
           <!-- 4. coupling_gamma -->
-          <div class="param-item">
+          <div class="param-item" id="gammaParamItem">
             <div class="param-top">
               <span class="param-title">4. 3번 마디 전향 교차 결합 보상 계수 (coupling_gamma, γ)</span>
               <span id="val_gamma" class="param-badge">0.25</span>
             </div>
-            <p class="param-desc">1번 모터(1·2번 마디) 작동 시 3번 마디에 미치는 간섭을 사전 계산해 상쇄하는 비율입니다: α₂_final = α₂_pure - (γ × α₁)</p>
+            <p class="param-desc">1번 모터(1·2번 마디) 작동/파지 시 와이어 장력 반작용으로 3번 마디가 함께 움직이는 것을 방지하는 비율입니다: α₂_final = α₂_pure + slack₂ - (γ × α₁)</p>
+            <p id="gammaSingleNotice" style="display:none; font-size:0.73rem; color:var(--warn); margin-bottom:6px; font-weight:600;">
+              ℹ️ 단일 모터 롤백 모드(NUM_MOTORS = 1)에서는 전향 교차 결합 보상이 적용되지 않습니다.
+            </p>
             <div class="slider-row">
               <input type="range" id="rng_gamma" min="0.00" max="0.60" step="0.02" value="0.25" oninput="syncParamUI('gamma', this.value)" onchange="applyParam('set_gamma', this.value)">
               <input type="number" id="num_gamma" min="0.00" max="0.60" step="0.02" value="0.25" onchange="syncParamUI('gamma', this.value); applyParam('set_gamma', this.value)">
@@ -634,7 +640,7 @@
               <span class="param-title">5. 과부하(Stall) 요구치 제한 각도 & 제한 발동 시간</span>
               <span id="val_stall_summary" class="param-badge">감지 150° → 제한 140° (5.0초)</span>
             </div>
-            <p class="param-desc">물체를 강하게 쥐어 각도 변화 요구치가 '감지 커트라인'을 초과한 상태로 '제한 시간' 이상 지속되면, 모터 보호를 위해 요구치를 '안전 제한 각도'로 하향 고정합니다.</p>
+            <p class="param-desc">물체를 강하게 쥐거나 양방향으로 걸려 가동 범위 정규화 요구치(|effectiveDemand|)가 '감지 커트라인'을 초과한 상태로 '제한 시간' 이상 지속되면, 모터 보호를 위해 요구치를 '안전 제한 각도'로 하향 고정합니다.</p>
             
             <div style="display:flex; flex-direction:column; gap:8px; margin-top:6px;">
               <div class="slider-row">
@@ -711,8 +717,11 @@
 
   <script>
     let ws = null;
+    let wsConnected = false;
     let isSimMode = false;
     let logCount = 0;
+    let lastSimSendAt = 0;
+    let simTrailingTimer = null;
 
     // 런타임 상태 및 파라미터
     let params = {
@@ -726,6 +735,7 @@
     };
 
     let state = {
+      motors: 2,
       p1: 0, des1: 0, a1: 0, dem1: 0, step1: 0, target1: 0, ext1: 0, flx1: 180, cal1: false, stall1: false,
       p2: 0, des2: 0, a2: 0, dem2: 0, step2: 0, pure2: 0, target2: 0, ext2: 0, flx2: 180, cal2: false, stall2: false,
       paused: false, calibrating: false, online: false
@@ -852,8 +862,11 @@
     function renderMonitoring() {
       // 상단 요약 배지
       const pillOnline = document.getElementById('pillOnline');
-      if (isSimMode) {
-        pillOnline.textContent = '시뮬레이션';
+      if (isSimMode && isWsOpen()) {
+        pillOnline.textContent = '🎛️ 웹 가상압력 구동중';
+        pillOnline.className = 'val val-warn';
+      } else if (isSimMode) {
+        pillOnline.textContent = '💻 PC 오프라인 시뮬';
         pillOnline.className = 'val val-warn';
       } else if (state.online) {
         pillOnline.textContent = '수신 양호 (50Hz)';
@@ -881,6 +894,14 @@
       if (state.calibrating) {
         pillCalib.textContent = '🔄 스윕 보정중...';
         pillCalib.className = 'val val-info';
+      } else if (state.motors === 1) {
+        if (state.cal1) {
+          pillCalib.textContent = '✅ 보정 완료 (1모터)';
+          pillCalib.className = 'val val-ok';
+        } else {
+          pillCalib.textContent = '📐 기본 arccos LUT';
+          pillCalib.className = 'val val-warn';
+        }
       } else if (state.cal1 && state.cal2) {
         pillCalib.textContent = '✅ 양채널 보정됨';
         pillCalib.className = 'val val-ok';
@@ -892,8 +913,27 @@
         pillCalib.className = 'val val-warn';
       }
 
+      const isSingleMotor = state.motors === 1;
+      const m2Card = document.getElementById('m2Card');
+      const m2SingleNotice = document.getElementById('m2SingleNotice');
+      const gammaSingleNotice = document.getElementById('gammaSingleNotice');
+      const btnStartCalib = document.getElementById('btnStartCalib');
+      const simP2Slider = document.getElementById('simP2Slider');
+      const simBlock2 = document.getElementById('simBlock2');
+      if (m2Card) m2Card.style.opacity = isSingleMotor ? '0.55' : '1';
+      if (m2SingleNotice) m2SingleNotice.style.display = isSingleMotor ? 'block' : 'none';
+      if (gammaSingleNotice) gammaSingleNotice.style.display = isSingleMotor ? 'block' : 'none';
+      if (simP2Slider) simP2Slider.disabled = isSingleMotor;
+      if (simBlock2) simBlock2.disabled = isSingleMotor;
+      if (btnStartCalib) {
+        btnStartCalib.textContent = isSingleMotor
+          ? '🔄 플렉스 센서 보정 시작 (1번 모터)'
+          : '🔄 플렉스 센서 순차 보정 시작 (2번→1번)';
+      }
+
       const pillStall = document.getElementById('pillStall');
-      if (state.stall1 || state.stall2) {
+      const hasStall = isSingleMotor ? state.stall1 : (state.stall1 || state.stall2);
+      if (hasStall) {
         pillStall.textContent = `⚠️ 과부하 제한중 (${params.stall_safe}°)`;
         pillStall.className = 'val val-danger';
       } else {
@@ -955,7 +995,7 @@
         document.getElementById('val_exp_k').textContent = num.toFixed(2);
       }
       drawExpCurve();
-      if (isSimMode) runSimStep();
+      if (isSimMode && !isWsOpen()) runOfflineSimStep();
     }
 
     function syncStallUI(fromNumber = false) {
@@ -996,7 +1036,10 @@
     }
 
     function triggerCalibration() {
-      appendLog('calib', '플렉스 센서 순차 캘리브레이션(2번 모터 -> 1번 모터) 요청을 전송했습니다.');
+      const msg = state.motors === 1
+        ? '플렉스 센서 캘리브레이션(1번 모터) 요청을 전송했습니다.'
+        : '플렉스 센서 순차 캘리브레이션(2번 모터 -> 1번 모터) 요청을 전송했습니다.';
+      appendLog('calib', msg);
       sendCmd('start_calib');
     }
 
@@ -1014,8 +1057,9 @@
         } else if (cmd === 'save_nvs') {
           appendLog('info', '[NVS] 시뮬레이션: 파라미터 및 LUT 저장 명령 확인됨');
         } else if (cmd === 'reset_lut') {
+          // 펌웨어 동작과 일치: 기존 탐색된 한계각(ext, flx)은 유지하고 보정 완료 플래그만 해제
           state.cal1 = false; state.cal2 = false;
-          state.ext1 = 0; state.flx1 = 180; state.ext2 = 0; state.flx2 = 180;
+          appendLog('warn', '[LUT] 시뮬레이션: 기존 한계각을 유지한 채 arccos 기본 LUT로 복원됨');
           renderMonitoring();
         }
       }
@@ -1039,7 +1083,40 @@
       }
     }
 
-    // PC 가상 시뮬레이션
+    function isWsOpen() {
+      return !!(ws && ws.readyState === WebSocket.OPEN);
+    }
+
+    function sendSimPacket(enable) {
+      lastSimSendAt = Date.now();
+      const p1 = enable ? (parseInt(document.getElementById('simP1Slider').value) || 0) : 0;
+      const p2 = enable ? (parseInt(document.getElementById('simP2Slider').value) || 0) : 0;
+      const b1 = enable ? document.getElementById('simBlock1').checked : false;
+      const b2 = enable ? document.getElementById('simBlock2').checked : false;
+      if (isWsOpen()) {
+        ws.send(JSON.stringify({ cmd: 'set_sim', enable, p1, p2, b1, b2 }));
+      }
+    }
+
+    function scheduleSimSync() {
+      if (!isWsOpen()) return;
+      const now = Date.now();
+      const elapsed = now - lastSimSendAt;
+      if (elapsed >= 40 && !simTrailingTimer) {
+        sendSimPacket(true);
+        return;
+      }
+      if (!simTrailingTimer) {
+        simTrailingTimer = setTimeout(() => {
+          simTrailingTimer = null;
+          if (isSimMode && isWsOpen()) {
+            sendSimPacket(true);
+          }
+        }, Math.max(10, 40 - elapsed));
+      }
+    }
+
+    // PC 오프라인 가상 시뮬레이션
     function calcArccosAngle(p, ext, flx) {
       let u = Math.min(Math.max(p / 4095.0, 0), 1);
       let acosIn = Math.min(Math.max(1.0 - 2.0 * u, -1), 1);
@@ -1049,19 +1126,51 @@
 
     function toggleSimMode(enabled) {
       isSimMode = enabled;
-      if (enabled) {
+      const chk = document.getElementById('simEnableChk');
+      if (chk) chk.checked = enabled;
+
+      if (isWsOpen()) {
+        if (simTrailingTimer) {
+          clearTimeout(simTrailingTimer);
+          simTrailingTimer = null;
+        }
+        if (enabled) {
+          appendLog('warn', '웹 가상 압력 연동(HIL) 모드가 활성화되었습니다. 슬라이더 조작 시 실제 서보모터가 구동됩니다.');
+          sendSimPacket(true);
+        } else {
+          appendLog('info', '웹 가상 압력 모드를 해제하고 발 송신부 무선 입력으로 복귀합니다.');
+          sendSimPacket(false);
+        }
+        renderMonitoring();
+      } else if (enabled) {
         document.getElementById('wsDot').className = 'dot sim';
         document.getElementById('wsStatusText').textContent = 'PC 시뮬레이션 모드';
-        appendLog('warn', 'PC 가상 압력 시뮬레이션 모드가 활성화되었습니다.');
-        runSimStep();
+        appendLog('warn', 'PC 오프라인 가상 압력 시뮬레이션 모드가 활성화되었습니다.');
+        runOfflineSimStep();
+      } else {
+        renderMonitoring();
       }
     }
 
-    function runSimStep() {
+    function onSimInput() {
+      const p1 = parseInt(document.getElementById('simP1Slider').value) || 0;
+      const p2 = parseInt(document.getElementById('simP2Slider').value) || 0;
+      document.getElementById('simP1Disp').textContent = p1;
+      document.getElementById('simP2Disp').textContent = p2;
+
       if (!isSimMode) {
-        document.getElementById('simEnableChk').checked = true;
         toggleSimMode(true);
+        return;
       }
+
+      if (isWsOpen()) {
+        scheduleSimSync();
+      } else {
+        runOfflineSimStep();
+      }
+    }
+
+    function runOfflineSimStep() {
       const p1 = parseInt(document.getElementById('simP1Slider').value) || 0;
       const p2 = parseInt(document.getElementById('simP2Slider').value) || 0;
       document.getElementById('simP1Disp').textContent = p1;
@@ -1107,6 +1216,7 @@
       ws = new WebSocket(`ws://${host}/ws`);
 
       ws.onopen = () => {
+        wsConnected = true;
         isSimMode = false;
         document.getElementById('simEnableChk').checked = false;
         document.getElementById('wsDot').className = 'dot online';
@@ -1116,7 +1226,17 @@
       };
 
       ws.onclose = () => {
-        if (!isSimMode) {
+        if (simTrailingTimer) {
+          clearTimeout(simTrailingTimer);
+          simTrailingTimer = null;
+        }
+        const wasConnected = wsConnected;
+        wsConnected = false;
+        if (wasConnected) {
+          isSimMode = false;
+          document.getElementById('simEnableChk').checked = false;
+        }
+        if (wasConnected || !isSimMode) {
           document.getElementById('wsDot').className = 'dot';
           document.getElementById('wsStatusText').textContent = '연결 끊김 (재연결 대기)';
           appendLog('err', '웹소켓 연결이 끊어졌습니다. 1.5초 후 재연결을 시도합니다...');
@@ -1132,6 +1252,11 @@
             return;
           }
           if (data.type === 'config') {
+            if (data.motors !== undefined) state.motors = data.motors;
+            if (data.sim !== undefined) {
+              isSimMode = !!data.sim;
+              document.getElementById('simEnableChk').checked = isSimMode;
+            }
             if (data.ema_alpha !== undefined) syncParamUI('ema_alpha', data.ema_alpha);
             if (data.max_step !== undefined)  syncParamUI('max_step', data.max_step);
             if (data.exp_k !== undefined)     syncParamUI('exp_k', data.exp_k);
@@ -1160,36 +1285,39 @@
             return;
           }
 
-          // 실시간 텔레메트리 수신
-          if (!isSimMode) {
-            state.p1      = data.p ?? 0;
-            state.des1    = data.des ?? 0;
-            state.a1      = data.a ?? 0;
-            state.dem1    = data.dem ?? 0;
-            state.step1   = data.step ?? 0;
-            state.target1 = data.target ?? 0;
-            if (data.ext !== undefined) state.ext1 = data.ext;
-            if (data.flx !== undefined) state.flx1 = data.flx;
-            if (data.cal !== undefined) state.cal1 = data.cal;
-            state.stall1  = !!data.stall;
-
-            state.p2      = data.p2 ?? 0;
-            state.des2    = data.des2 ?? 0;
-            state.a2      = data.a2 ?? 0;
-            state.dem2    = data.dem2 ?? 0;
-            state.step2   = data.step2 ?? 0;
-            state.pure2   = data.pure2 ?? 0;
-            state.target2 = data.target2 ?? 0;
-            if (data.ext2 !== undefined) state.ext2 = data.ext2;
-            if (data.flx2 !== undefined) state.flx2 = data.flx2;
-            if (data.cal2 !== undefined) state.cal2 = data.cal2;
-            state.stall2  = !!data.stall2;
-
-            state.paused      = !!data.paused;
-            state.calibrating = !!data.calibrating;
-            state.online      = !!data.online;
-            renderMonitoring();
+          // 실시간 텔레메트리 수신 (가상 압력 HIL 연동 중에도 실제 서보/플렉스 상태 갱신)
+          if (data.motors !== undefined) state.motors = data.motors;
+          if (data.sim !== undefined && Date.now() - lastSimSendAt > 400) {
+            isSimMode = !!data.sim;
+            document.getElementById('simEnableChk').checked = isSimMode;
           }
+          state.p1      = data.p ?? 0;
+          state.des1    = data.des ?? 0;
+          state.a1      = data.a ?? 0;
+          state.dem1    = data.dem ?? 0;
+          state.step1   = data.step ?? 0;
+          state.target1 = data.target ?? 0;
+          if (data.ext !== undefined) state.ext1 = data.ext;
+          if (data.flx !== undefined) state.flx1 = data.flx;
+          if (data.cal !== undefined) state.cal1 = data.cal;
+          state.stall1  = !!data.stall;
+
+          state.p2      = data.p2 ?? 0;
+          state.des2    = data.des2 ?? 0;
+          state.a2      = data.a2 ?? 0;
+          state.dem2    = data.dem2 ?? 0;
+          state.step2   = data.step2 ?? 0;
+          state.pure2   = data.pure2 ?? 0;
+          state.target2 = data.target2 ?? 0;
+          if (data.ext2 !== undefined) state.ext2 = data.ext2;
+          if (data.flx2 !== undefined) state.flx2 = data.flx2;
+          if (data.cal2 !== undefined) state.cal2 = data.cal2;
+          state.stall2  = !!data.stall2;
+
+          state.paused      = !!data.paused;
+          state.calibrating = !!data.calibrating;
+          state.online      = !!data.online;
+          renderMonitoring();
         } catch (e) {}
       };
     }

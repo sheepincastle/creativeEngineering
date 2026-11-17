@@ -10,6 +10,8 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_idf_version.h>
+#include <math.h>
 #include "protocol.h"
 
 // 핀 정의 (Wi-Fi/ESP-NOW 활성 시 충돌 없는 ADC1 전용 입력 핀 사용)
@@ -31,7 +33,7 @@ const uint8_t FSR_PINS[NUM_MOTORS] = {FSR_ADC_PIN_1};
 FootSensorPacket txPacket;
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // 브로드캐스트 전송
 float filteredPressure[NUM_MOTORS] = {0.0f};
-float emaAlpha = 0.25f;         // 기본 EMA 알파 계수
+volatile float emaAlpha = 0.25f; // 기본 EMA 알파 계수 (ESP-NOW 수신 콜백과 loop 간 가시성 보장)
 uint16_t zeroOffset[NUM_MOTORS] = {0}; // 각 FSR 센서의 무부하 기준 영점 오프셋
 unsigned long lastSendTime = 0;
 
@@ -52,23 +54,50 @@ void calibrateZeroOffset() {
     }
 }
 
-// ESP-NOW 전송 완료 콜백
-void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+static void handleDataSentStatus(esp_now_send_status_t status) {
     if (status == ESP_NOW_SEND_SUCCESS) {
         digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN)); // 토글 점멸
     }
 }
 
-// 팔 수신부로부터 EMA 필터 계수(ema_alpha) 변경 패킷 수신 콜백
-void onConfigReceived(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
+// ESP-NOW 전송 완료 콜백
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+void onDataSent(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
+    (void)tx_info;
+    handleDataSentStatus(status);
+}
+#else
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+    (void)mac_addr;
+    handleDataSentStatus(status);
+}
+#endif
+
+static void handleConfigPacket(const uint8_t *data, int data_len) {
     if (data_len == sizeof(FootConfigPacket)) {
         const FootConfigPacket *cfg = (const FootConfigPacket *)data;
         if (cfg->ema_alpha >= 0.01f && cfg->ema_alpha <= 1.0f) {
-            emaAlpha = cfg->ema_alpha;
-            Serial.printf("[CFG] 팔 수신부로부터 EMA 필터 계수 동기화 완료: ema_alpha = %.2f\n", emaAlpha);
+            // 주기적 재동기화 패킷 수신 시 값이 실제로 변경된 경우에만 갱신 및 로그 출력
+            if (fabsf(emaAlpha - cfg->ema_alpha) > 0.001f) {
+                emaAlpha = cfg->ema_alpha;
+                Serial.printf("[CFG] 팔 수신부로부터 EMA 필터 계수 동기화 완료: ema_alpha = %.2f\n", (float)emaAlpha);
+            }
         }
     }
 }
+
+// 팔 수신부로부터 EMA 필터 계수(ema_alpha) 변경 패킷 수신 콜백
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+void onConfigReceived(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
+    (void)esp_now_info;
+    handleConfigPacket(data, data_len);
+}
+#else
+void onConfigReceived(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
+    (void)mac_addr;
+    handleConfigPacket(data, data_len);
+}
+#endif
 
 void setup() {
     Serial.begin(115200);
@@ -129,6 +158,7 @@ void loop() {
 
     if (currentMillis - lastSendTime >= SEND_INTERVAL_MS) {
         lastSendTime = currentMillis;
+        float currentAlpha = emaAlpha;
 
         for (int ch = 0; ch < NUM_MOTORS; ch++) {
             // 1. 각 센서 ADC 원시 데이터 수집
@@ -139,7 +169,7 @@ void loop() {
             if (zeroAdjusted < 0) zeroAdjusted = 0;
 
             // 3. 지수 이동 평균(EMA) 필터링: S_t = α * Y_t + (1 - α) * S_{t-1}
-            filteredPressure[ch] = (emaAlpha * (float)zeroAdjusted) + ((1.0f - emaAlpha) * filteredPressure[ch]);
+            filteredPressure[ch] = (currentAlpha * (float)zeroAdjusted) + ((1.0f - currentAlpha) * filteredPressure[ch]);
 
             // 4. 전송 패킷 조립
             txPacket.raw_pressure[ch] = (uint16_t)constrain((int)round(filteredPressure[ch]), 0, 4095);

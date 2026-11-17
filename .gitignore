@@ -9,6 +9,8 @@ Desktop.ini
 !.vscode/extensions.json
 **/.vscode/c_cpp_properties.json
 **/.vscode/launch.json
+**/.vscode/.browse.c_cpp.db*
+**/.vscode/ipch
 *.sublime-project
 *.sublime-workspace
 .idea/
@@ -32,6 +34,8 @@ pnpm-debug.log*
 **/.pio/
 **/.pioenvs/
 **/.piolibdeps/
+**/.cache/
+**/compile_commands.json
 
 # Arduino / PlatformIO output files
 *.elf
