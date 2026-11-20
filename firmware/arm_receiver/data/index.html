@@ -399,7 +399,7 @@
     <!-- 상단 핵심 상태 요약 바 (모든 탭 공통 표시) -->
     <div class="quick-status-bar">
       <div class="status-pill">
-        <span>발 송신부 무선링크</span>
+        <span id="pillOnlineLabel">발 FSR 입력 상태</span>
         <span id="pillOnline" class="val val-info">대기중</span>
       </div>
       <div class="status-pill">
@@ -585,7 +585,7 @@
               <span class="param-title">1. 발 압력 센서 EMA 필터 계수 (ema_alpha)</span>
               <span id="val_ema_alpha" class="param-badge">0.25</span>
             </div>
-            <p class="param-desc">낮을수록 노이즈 억제력이 커져 부드러워지고, 높을수록 발 압력 변화에 즉각 반응합니다. (발 송신부로 실시간 무선 동기화됨)</p>
+            <p id="emaAlphaDesc" class="param-desc">낮을수록 노이즈 억제력이 커져 부드러워지고, 높을수록 발 압력 변화에 즉각 반응합니다. (팔 ESP32 내부에서 즉시 적용됨)</p>
             <div class="slider-row">
               <input type="range" id="rng_ema_alpha" min="0.05" max="0.95" step="0.05" value="0.25" oninput="syncParamUI('ema_alpha', this.value)" onchange="applyParam('set_alpha', this.value)">
               <input type="number" id="num_ema_alpha" min="0.05" max="0.95" step="0.05" value="0.25" onchange="syncParamUI('ema_alpha', this.value); applyParam('set_alpha', this.value)">
@@ -676,6 +676,9 @@
           <button class="btn btn-warn" onclick="sendCmd('reset_lut')">
             📐 arccos 기본 LUT로 초기화
           </button>
+          <button class="btn btn-full" id="btnZeroFsr" onclick="sendCmd('zero_fsr')">
+            ⚖️ FSR 무부하 영점 재보정 (발 뗀 상태에서 클릭)
+          </button>
           <button class="btn btn-primary btn-full" onclick="sendCmd('save_nvs')">
             💾 모든 파라미터(1~5) 및 가변 단계 LUT 비휘발성 메모리(NVS) 영구 저장
           </button>
@@ -699,7 +702,7 @@
         <div id="terminalBox" class="terminal-box"></div>
 
         <div class="terminal-controls">
-          <input type="text" id="manualCmdInput" class="cmd-input" placeholder='수동 명령 입력 (예: {"cmd":"get_config"} 또는 start_calib, save_nvs, toggle_pause)' onkeydown="if(event.key==='Enter') sendManualCmd()">
+          <input type="text" id="manualCmdInput" class="cmd-input" placeholder='수동 명령 입력 (예: {"cmd":"get_config"} 또는 start_calib, zero_fsr, save_nvs, toggle_pause)' onkeydown="if(event.key==='Enter') sendManualCmd()">
           <button class="btn btn-primary" onclick="sendManualCmd()">전송</button>
         </div>
       </div>
@@ -736,6 +739,7 @@
 
     let state = {
       motors: 2,
+      directFsr: true,
       p1: 0, des1: 0, a1: 0, dem1: 0, step1: 0, target1: 0, ext1: 0, flx1: 180, cal1: false, stall1: false,
       p2: 0, des2: 0, a2: 0, dem2: 0, step2: 0, pure2: 0, target2: 0, ext2: 0, flx2: 180, cal2: false, stall2: false,
       paused: false, calibrating: false, online: false
@@ -861,19 +865,38 @@
     // 모니터링 UI 갱신
     function renderMonitoring() {
       // 상단 요약 배지
+      const pillOnlineLabel = document.getElementById('pillOnlineLabel');
       const pillOnline = document.getElementById('pillOnline');
+      if (pillOnlineLabel) {
+        pillOnlineLabel.textContent = state.directFsr ? '발 FSR 입력 상태' : '발 송신부 무선링크';
+      }
       if (isSimMode && isWsOpen()) {
         pillOnline.textContent = '🎛️ 웹 가상압력 구동중';
         pillOnline.className = 'val val-warn';
       } else if (isSimMode) {
         pillOnline.textContent = '💻 PC 오프라인 시뮬';
         pillOnline.className = 'val val-warn';
+      } else if (state.directFsr) {
+        pillOnline.textContent = '🔌 유선 직결 (50Hz)';
+        pillOnline.className = 'val val-ok';
       } else if (state.online) {
         pillOnline.textContent = '수신 양호 (50Hz)';
         pillOnline.className = 'val val-ok';
       } else {
         pillOnline.textContent = '타임아웃 (Fail-Safe)';
         pillOnline.className = 'val val-danger';
+      }
+
+      const emaAlphaDesc = document.getElementById('emaAlphaDesc');
+      if (emaAlphaDesc) {
+        emaAlphaDesc.textContent = state.directFsr
+          ? '낮을수록 노이즈 억제력이 커져 부드러워지고, 높을수록 발 압력 변화에 즉각 반응합니다. (팔 ESP32 내부에서 즉시 적용됨)'
+          : '낮을수록 노이즈 억제력이 커져 부드러워지고, 높을수록 발 압력 변화에 즉각 반응합니다. (발 송신부로 실시간 무선 동기화됨)';
+      }
+
+      const btnZeroFsr = document.getElementById('btnZeroFsr');
+      if (btnZeroFsr) {
+        btnZeroFsr.style.display = state.directFsr ? 'inline-flex' : 'none';
       }
 
       const pillPaused = document.getElementById('pillPaused');
@@ -1061,6 +1084,8 @@
           state.cal1 = false; state.cal2 = false;
           appendLog('warn', '[LUT] 시뮬레이션: 기존 한계각을 유지한 채 arccos 기본 LUT로 복원됨');
           renderMonitoring();
+        } else if (cmd === 'zero_fsr') {
+          appendLog('calib', '[FSR] 시뮬레이션: 유선 직결 FSR 무부하 영점 재보정 명령 확인됨');
         }
       }
     }
@@ -1138,7 +1163,9 @@
           appendLog('warn', '웹 가상 압력 연동(HIL) 모드가 활성화되었습니다. 슬라이더 조작 시 실제 서보모터가 구동됩니다.');
           sendSimPacket(true);
         } else {
-          appendLog('info', '웹 가상 압력 모드를 해제하고 발 송신부 무선 입력으로 복귀합니다.');
+          appendLog('info', state.directFsr
+            ? '웹 가상 압력 모드를 해제하고 유선 직결 FSR 입력으로 복귀합니다.'
+            : '웹 가상 압력 모드를 해제하고 발 송신부 무선 입력으로 복귀합니다.');
           sendSimPacket(false);
         }
         renderMonitoring();
@@ -1253,6 +1280,7 @@
           }
           if (data.type === 'config') {
             if (data.motors !== undefined) state.motors = data.motors;
+            if (data.direct_fsr !== undefined) state.directFsr = !!data.direct_fsr;
             if (data.sim !== undefined) {
               isSimMode = !!data.sim;
               document.getElementById('simEnableChk').checked = isSimMode;
@@ -1287,6 +1315,7 @@
 
           // 실시간 텔레메트리 수신 (가상 압력 HIL 연동 중에도 실제 서보/플렉스 상태 갱신)
           if (data.motors !== undefined) state.motors = data.motors;
+          if (data.direct_fsr !== undefined) state.directFsr = !!data.direct_fsr;
           if (data.sim !== undefined && Date.now() - lastSimSendAt > 400) {
             isSimMode = !!data.sim;
             document.getElementById('simEnableChk').checked = isSimMode;

@@ -6,8 +6,9 @@
   let isSimMode = false;
   let activeTab = 'monitor'; // 'monitor' | 'params' | 'terminal'
 
-  // 활성 모터 채널 수 (펌웨어 NUM_MOTORS와 동기화: 1 또는 2)
+  // 활성 모터 채널 수 (펌웨어 NUM_MOTORS와 동기화: 1 또는 2) & 유선 직결 FSR 여부
   let numMotors = 2;
+  let isDirectFsr = true;
 
   // 1~5. 튜닝 파라미터 (NVS 저장 대상)
   let emaAlpha = 0.25;
@@ -208,7 +209,9 @@
         addLog('warn', '웹 가상 압력 연동(HIL) 모드가 활성화되었습니다. 슬라이더 조작 시 실제 서보모터가 구동됩니다.');
         sendSimPacket(true);
       } else {
-        addLog('info', '웹 가상 압력 모드를 해제하고 발 송신부 무선 입력으로 복귀합니다.');
+        addLog('info', isDirectFsr
+          ? '웹 가상 압력 모드를 해제하고 유선 직결 FSR 입력으로 복귀합니다.'
+          : '웹 가상 압력 모드를 해제하고 발 송신부 무선 입력으로 복귀합니다.');
         sendSimPacket(false);
       }
     } else if (enabled) {
@@ -301,6 +304,7 @@
         }
         if (data.type === 'config') {
           if (data.motors !== undefined)     numMotors = data.motors;
+          if (data.direct_fsr !== undefined) isDirectFsr = !!data.direct_fsr;
           if (data.sim !== undefined)        isSimMode = !!data.sim;
           if (data.ema_alpha !== undefined)  emaAlpha = Number(data.ema_alpha.toFixed(2));
           if (data.max_step !== undefined)   maxStepAlpha = Number(data.max_step.toFixed(1));
@@ -320,6 +324,7 @@
 
         // 실시간 텔레메트리 수신 (가상 압력 HIL 연동 중에도 실제 서보/플렉스 상태 갱신)
         if (data.motors !== undefined) numMotors = data.motors;
+        if (data.direct_fsr !== undefined) isDirectFsr = !!data.direct_fsr;
         if (data.sim !== undefined && Date.now() - lastSimSendAt > 400) {
           isSimMode = !!data.sim;
         }
@@ -369,6 +374,8 @@
         cal1 = false;
         cal2 = false;
         addLog('warn', '[LUT] 시뮬레이션: 기존 한계각을 유지한 채 arccos 기본 LUT로 복원됨');
+      } else if (cmd === 'zero_fsr') {
+        addLog('calib', '[FSR] 시뮬레이션: 유선 직결 FSR 무부하 영점 재보정 명령 확인됨');
       }
     }
   }
@@ -435,11 +442,13 @@
   <!-- 상단 핵심 상태 요약 바 (모든 탭 공통 표시) -->
   <section class="quick-grid">
     <div class="pill">
-      <span>발 송신부 무선링크</span>
+      <span>{isDirectFsr ? '발 FSR 입력 상태' : '발 송신부 무선링크'}</span>
       {#if isSimMode && isConnected}
         <strong class="warn">🎛️ 웹 가상압력 구동중</strong>
       {:else if isSimMode}
         <strong class="warn">💻 PC 오프라인 시뮬</strong>
+      {:else if isDirectFsr}
+        <strong class="ok">🔌 유선 직결 (50Hz)</strong>
       {:else}
         <strong class:ok={isOnline} class:danger={!isOnline}>{isOnline ? '수신 양호 (50Hz)' : '타임아웃 (Fail-Safe)'}</strong>
       {/if}
@@ -625,7 +634,10 @@
           <span>1. 발 압력 센서 EMA 필터 계수 (ema_alpha)</span>
           <strong class="param-badge">{emaAlpha.toFixed(2)}</strong>
         </div>
-        <p class="param-desc">낮을수록 노이즈 억제력이 커져 부드러워지고, 높을수록 발 압력 변화에 즉각 반응합니다. (발 송신부로 실시간 무선 동기화됨)</p>
+        <p class="param-desc">
+          낮을수록 노이즈 억제력이 커져 부드러워지고, 높을수록 발 압력 변화에 즉각 반응합니다.
+          {isDirectFsr ? '(팔 ESP32 내부에서 즉시 적용됨)' : '(발 송신부로 실시간 무선 동기화됨)'}
+        </p>
         <div class="slider-row">
           <input type="range" min="0.05" max="0.95" step="0.05" bind:value={emaAlpha} on:input={() => { if (isSimMode && !isWsOpen()) runOfflineSimStep(); }} on:change={() => sendCmd('set_alpha', { val: emaAlpha })} />
           <input type="number" min="0.05" max="0.95" step="0.05" bind:value={emaAlpha} on:change={() => sendCmd('set_alpha', { val: emaAlpha })} />
@@ -710,6 +722,11 @@
         <button class="btn btn-warn" on:click={() => sendCmd('reset_lut')}>
           📐 arccos 기본 LUT로 초기화
         </button>
+        {#if isDirectFsr}
+          <button class="btn btn-full" on:click={() => sendCmd('zero_fsr')}>
+            ⚖️ FSR 무부하 영점 재보정 (발 뗀 상태에서 클릭)
+          </button>
+        {/if}
         <button class="btn btn-primary btn-full" on:click={() => sendCmd('save_nvs')}>
           💾 모든 파라미터(1~5) 및 가변 단계 LUT 비휘발성 메모리(NVS) 영구 저장
         </button>
@@ -739,7 +756,7 @@
         {/each}
       </div>
       <div class="cmd-row">
-        <input class="cmd-input" bind:value={manualCmd} placeholder='수동 명령 입력 (예: {"cmd":"get_config"} 또는 start_calib, save_nvs, toggle_pause)' on:keydown={(e) => e.key === 'Enter' && sendManualCommand()} />
+        <input class="cmd-input" bind:value={manualCmd} placeholder='수동 명령 입력 (예: {"cmd":"get_config"} 또는 start_calib, zero_fsr, save_nvs, toggle_pause)' on:keydown={(e) => e.key === 'Enter' && sendManualCommand()} />
         <button class="btn btn-primary" on:click={sendManualCommand}>전송</button>
       </div>
     </section>

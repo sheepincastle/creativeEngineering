@@ -9,7 +9,16 @@
 // 구동 모터 및 센서 채널 수 설정
 // - 2: 듀얼 모터 모드 (1번 모터: 바깥쪽 1·2번 마디, 2번 모터: 손날 쪽 3번 마디)
 // - 1: 단일 모터 모드 (시간 부족 등으로 원래 계획으로 롤백 시 이 값만 1로 변경)
+#ifndef NUM_MOTORS
 #define NUM_MOTORS 1
+#endif
+
+// 발 압력(FSR) 센서 입력 방식 설정
+// - 1: 팔 ESP32 단독 통합 모드 — FSR 압력 센서를 팔 ESP32의 ADC1 핀(GPIO 32, GPIO 33)에 직접 유선 연결 (발 송신부 ESP32 미사용)
+// - 0: 기존 무선(ESP-NOW) 모드 — 별도의 발 송신부 ESP32로부터 무선 패킷 수신
+#ifndef USE_DIRECT_FSR
+#define USE_DIRECT_FSR 1
+#endif
 
 // 모터 인덱스 정의
 #define MOTOR_OUTER_IDX 0 // 1번 모터: 바깥쪽 1, 2번 마디 구동 및 제어 채널
